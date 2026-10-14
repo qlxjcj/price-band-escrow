@@ -143,7 +143,7 @@
 <script type="module">
 import { createClient } from "https://cdn.jsdelivr.net/npm/genlayer-js@1.2.0/+esm";
 
-const CONTRACT = "0xCc6B626e9815070846C50Ba373886dd3B8691aBE";
+const CONTRACT = "0x4ab3869c5D3C1C77d92Df8a352F9DEfde273cBDE";
 const RPC = "https://rpc-bradbury.genlayer.com";
 const SCALE = 100000000;
 
@@ -225,26 +225,25 @@ function toScaled(text, scale) {
   return neg ? -v : v;
 }
 
+const ASSETS = ["bitcoin", "ethereum"];
+const PROVIDERS = ["coingecko", "bitstamp", "coinpaprika"];
+
 async function loadCatalogue() {
-  const raw = await read("get_catalogue", []);
-  const cat = JSON.parse(raw);
   const sel = $("f_asset");
   sel.textContent = "";
-  for (const a of cat.assets) sel.appendChild(el("option", "", a));
+  for (const a of ASSETS) sel.appendChild(el("option", "", a));
   const box = $("f_providers");
   box.textContent = "";
-  for (const p of cat.providers) {
-    const id = "prov_" + p;
+  for (const p of PROVIDERS) {
     const wrap = el("label", "", "");
     wrap.style.textTransform = "none";
     const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.id = id; cb.value = p; cb.checked = true; cb.style.width = "auto";
+    cb.type = "checkbox"; cb.value = p; cb.checked = true; cb.style.width = "auto";
     wrap.appendChild(cb);
     wrap.appendChild(document.createTextNode(" " + p));
     box.appendChild(wrap);
   }
-  $("chainStatus").textContent = cat.providers.join(" · ") + " · scale 1e" +
-    String(cat.price_scale).split("0").length;
+  $("chainStatus").textContent = PROVIDERS.join(" · ") + " · prices at 1e8 scale";
 }
 
 // ---------- trade list ----------

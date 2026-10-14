@@ -413,7 +413,7 @@ def test_out_of_band_refunds_the_buyer_whole(escrow):
     before_b = balance(vm, BUYER)
     before_s = balance(vm, SELLER)
     assert settle(vm, c, tid) == "REFUNDED"
-    assert trade(vm, c, tid)["reason"] == "the verified price is outside the agreed band"
+    assert trade(vm, c, tid)["reason"] == "the verified price is outside the band"
     assert balance(vm, BUYER) == before_b + ESCROW
     assert balance(vm, SELLER) == before_s
 
@@ -424,7 +424,7 @@ def test_underfunded_escrow_refunds_the_buyer(escrow):
     happy(vm)
     before_b = balance(vm, BUYER)
     assert settle(vm, c, tid) == "REFUNDED"
-    assert trade(vm, c, tid)["reason"] == "escrow does not cover the verified cost"
+    assert trade(vm, c, tid)["reason"] == "escrow does not cover the cost"
     assert balance(vm, BUYER) == before_b + (COST - 1000)
 
 
@@ -494,7 +494,7 @@ def test_expire_only_after_the_deadline(escrow):
     vm.warp(iso(601))
     vm.sender = STRANGER
     assert c.expire(tid) == "REFUNDED"
-    assert trade(vm, c, tid)["reason"] == "the deadline passed with no settlement"
+    assert trade(vm, c, tid)["reason"] == "no settlement before the deadline"
 
 
 def test_expire_refunds_the_escrow_whole(escrow):
@@ -568,7 +568,7 @@ def test_views_return_strings_never_structures(escrow):
     while direct mode stays green, so the type is part of the contract."""
     vm, c = escrow
     tid = open_trade(vm, c)
-    for value in (c.get_trade(tid), c.get_quote(tid), c.get_catalogue()):
+    for value in (c.get_trade(tid), c.get_quote(tid)):
         assert isinstance(value, str)
         json.loads(value)
     assert isinstance(c.get_trade_count(), int)

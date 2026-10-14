@@ -8,8 +8,8 @@ and freshness, refuses the set if the providers disagree beyond the agreed
 tolerance, and pays out at the median. Out of band, unverifiable, or
 underfunded — the whole escrow goes home.
 
-Deployed on GenLayer Bradbury: **`0xCc6B626e9815070846C50Ba373886dd3B8691aBE`**
-([explorer](https://explorer-bradbury.genlayer.com/address/0xCc6B626e9815070846C50Ba373886dd3B8691aBE))
+Deployed on GenLayer Bradbury: **`0x4ab3869c5D3C1C77d92Df8a352F9DEfde273cBDE`**
+([explorer](https://explorer-bradbury.genlayer.com/address/0x4ab3869c5D3C1C77d92Df8a352F9DEfde273cBDE))
 
 ---
 
@@ -119,5 +119,5 @@ python -m pytest tests/direct -q        # 45 passed
 Deployed and repository source are byte identical:
 
 ```
-sha256  07636767aeeebd0db45c70f6f929b40a3bd7a85a83448e234308b1edc12302f1
+sha256  b8f11f442f8d3cde5c9daa723ab3652036c421285659b00be8e30dcbd0db3a6c
 ```

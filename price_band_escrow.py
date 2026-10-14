@@ -7,6 +7,7 @@ MIN_PROVIDERS = 2
 MAX_TOL = 5000
 MAX_AGE = 900
 SKEW = 120
+REF_TOL_BPS = 200
 
 OPEN = "OPEN"
 EXECUTED = "EXECUTED"
@@ -148,7 +149,6 @@ class PriceBandEscrow(gl.Contract):
         self.trades[t["trade_id"]] = json.dumps(t)
 
     # ---------------- provider adapters ----------------
-    # Parsing is pure; the fetch lives inside the equivalence block below.
 
     def _url(self, pid: str, asset: str, unit: str) -> str:
         if pid == "coingecko":
@@ -180,39 +180,39 @@ class PriceBandEscrow(gl.Contract):
                 bad["reason"] = pid + " has no entry for this asset"
                 return bad
             if unit not in node:
-                bad["reason"] = pid + " quote is not in the asked unit"
+                bad["reason"] = pid + " quote is in another unit"
                 return bad
             price, ts = self._dec(node[unit]), node.get("last_updated_at")
             if not isinstance(ts, int) or price <= 0:
-                bad["reason"] = pid + " payload is missing price or freshness"
+                bad["reason"] = pid + " lacks price or freshness"
                 return bad
             return {"ok": True, "price": price, "updated": ts, "label": key,
                     "reason": "", "body": body[:400]}
 
         if pid == "bitstamp":
             if "last" not in data or "timestamp" not in data:
-                bad["reason"] = pid + " payload is missing price or freshness"
+                bad["reason"] = pid + " lacks price or freshness"
                 return bad
             price = self._dec(data["last"])
             ts = self._dec(data["timestamp"]) // SCALE
             if price <= 0 or ts <= 0:
-                bad["reason"] = pid + " reported a non-positive quote"
+                bad["reason"] = pid + " reports a non-positive quote"
                 return bad
             return {"ok": True, "price": price, "updated": ts,
                     "label": ASSETS[asset]["bitstamp"], "reason": "", "body": body[:400]}
 
         if str(data.get("id", "")) != ASSETS[asset]["coinpaprika"]:
-            bad["reason"] = pid + " answered about a different asset"
+            bad["reason"] = pid + " names a different asset"
             return bad
         quotes = data.get("quotes")
         node = quotes.get(unit.upper()) if isinstance(quotes, dict) else None
         if not isinstance(node, dict) or "price" not in node:
-            bad["reason"] = pid + " quote is not in the asked unit"
+            bad["reason"] = pid + " quote is in another unit"
             return bad
         price = self._dec(node["price"])
         ts = self._iso_to_epoch(str(data.get("last_updated", "")))
         if price <= 0 or ts <= 0:
-            bad["reason"] = pid + " payload is missing price or freshness"
+            bad["reason"] = pid + " lacks price or freshness"
             return bad
         return {"ok": True, "price": price, "updated": ts,
                 "label": str(data.get("symbol", "")), "reason": "", "body": body[:400]}
@@ -220,14 +220,14 @@ class PriceBandEscrow(gl.Contract):
     def _identity(self, rows: list, asset: str) -> dict:
         """Do these responses describe one asset? Labels are code-checked after."""
         task = (
-            "These are responses from several price providers. One question only:\n"
-            "do they all describe the SAME asset? For each, return the short label it\n"
-            "uses for the asset, copied exactly from that response. Empty if it names\n"
-            "no asset.\n\n" +
+            "Price provider responses. One question:\n"
+            "do they all describe the SAME asset? For each return the asset label copied\n"
+            "exactly from it, or empty.\n"
+            "\n" +
             "\n\n".join(["RESPONSE " + str(i + 1) + ":\n" + str(r.get("body", ""))[:500]
                          for i, r in enumerate(rows)]) +
             "\n\nASSET ASKED FOR: " + asset +
-            '\n\nJSON only: {"same": "true"|"false"|"unclear", "labels": ["...", ...]}'
+            '\nJSON: {"same":"true"|"false"|"unclear","labels":["..."]}'
         )
         parsed = None
         try:
@@ -262,7 +262,7 @@ class PriceBandEscrow(gl.Contract):
         buyer = self._addr_hex(gl.message.sender_address)
         escrow = int(gl.message.value)
         if not self._is_valid_address(seller) or self._addr_hex(seller).lower() == buyer.lower():
-            raise gl.vm.UserError("Seller must be a different 0x address")
+            raise gl.vm.UserError("Seller must be another 0x address")
         if escrow <= 0:
             raise gl.vm.UserError("Escrow must be > 0")
         a = str(asset).strip().lower()
@@ -278,7 +278,7 @@ class PriceBandEscrow(gl.Contract):
         if not 0 <= int(tolerance_bps) <= MAX_TOL:
             raise gl.vm.UserError("Tolerance must be 0..5000 bps")
         if not isinstance(providers, list) or len(providers) < MIN_PROVIDERS:
-            raise gl.vm.UserError("At least two providers are required")
+            raise gl.vm.UserError("Need at least two providers")
         plist = []
         for p in providers:
             pid = str(p).strip()
@@ -287,7 +287,7 @@ class PriceBandEscrow(gl.Contract):
             plist.append(pid)
         now = self._now()
         if int(settle_after) <= 0 or int(deadline) <= int(settle_after):
-            raise gl.vm.UserError("Deadline must be after the settle window opens")
+            raise gl.vm.UserError("Deadline must follow the settle window")
 
         tid = "t" + str(int(self.trade_count))
         self.trades[tid] = json.dumps({
@@ -371,10 +371,38 @@ class PriceBandEscrow(gl.Contract):
                     "reference": reference, "same": same, "verdict": verdict}
 
         # One consensus point for a settlement; the verdict is computed in code.
-        res = gl.eq_principle.prompt_comparative(
-            run,
-            "Equivalent only if verdict, valid, reference and same all match exactly and "
-            "the rows agree on which providers were accepted. Reason wording may differ.")
+        # Prices move between two fetches, so the reference is compared with an
+        # explicit numeric tolerance while the decision fields match exactly.
+        # Comparing a live price for exact equality can never converge.
+        def agrees(leader) -> bool:
+            if not isinstance(leader, gl.vm.Return):
+                return False
+            his = leader.calldata
+            mine = run()
+            if not isinstance(his, dict):
+                return False
+            for k in ("verdict", "valid", "same"):
+                if str(his.get(k)) != str(mine.get(k)):
+                    return False
+            hr = int(his.get("reference", 0))
+            mr = int(mine.get("reference", 0))
+            if hr <= 0 or mr <= 0:
+                if hr != mr:
+                    return False
+            elif abs(hr - mr) * 10000 > hr * REF_TOL_BPS:
+                return False
+            hrows = his.get("rows")
+            mrows = mine.get("rows")
+            if not isinstance(hrows, list) or not isinstance(mrows, list) or len(hrows) != len(mrows):
+                return False
+            for a, b in zip(hrows, mrows):
+                if bool(a.get("ok")) != bool(b.get("ok")):
+                    return False
+                if str(a.get("provider")) != str(b.get("provider")):
+                    return False
+            return True
+
+        res = gl.vm.run_nondet_unsafe(run, agrees)
         if not isinstance(res, dict):
             res = {}
 
@@ -392,12 +420,12 @@ class PriceBandEscrow(gl.Contract):
                            else "the quote could not be verified")
         elif t["reference"] < int(t["band_low"]) or t["reference"] > int(t["band_high"]):
             t["status"] = REFUNDED
-            t["reason"] = "the verified price is outside the agreed band"
+            t["reason"] = "the verified price is outside the band"
         else:
             cost = (qty * t["reference"]) // SCALE
             if cost > escrow:
                 t["status"] = REFUNDED
-                t["reason"] = "escrow does not cover the verified cost"
+                t["reason"] = "escrow does not cover the cost"
             else:
                 t["status"] = EXECUTED
                 t["reason"] = "verified inside the band"
@@ -425,7 +453,7 @@ class PriceBandEscrow(gl.Contract):
         if self._addr_hex(gl.message.sender_address).lower() != str(t["buyer"]).lower():
             raise gl.vm.UserError("Only the buyer cancels")
         if self._now() >= int(t["settle_after"]):
-            raise gl.vm.UserError("The settle window has already opened")
+            raise gl.vm.UserError("The settle window is open")
         t["status"] = CANCELLED
         t["reason"] = "cancelled by the buyer"
         t["buyer_refund"] = int(t["escrow"])
@@ -442,7 +470,7 @@ class PriceBandEscrow(gl.Contract):
         if self._now() <= int(t["deadline"]):
             raise gl.vm.UserError("The deadline has not passed")
         t["status"] = REFUNDED
-        t["reason"] = "the deadline passed with no settlement"
+        t["reason"] = "no settlement before the deadline"
         t["buyer_refund"] = int(t["escrow"])
         self._save(t)
         self._transfer(Address(t["buyer"]), int(t["escrow"]))
@@ -463,9 +491,3 @@ class PriceBandEscrow(gl.Contract):
     @gl.public.view
     def get_trade_count(self) -> int:
         return int(self.trade_count)
-
-    @gl.public.view
-    def get_catalogue(self) -> str:
-        return json.dumps({"providers": PROVIDERS, "assets": list(ASSETS.keys()),
-                           "price_scale": SCALE, "min_providers": MIN_PROVIDERS,
-                           "max_tolerance_bps": MAX_TOL, "max_age_seconds": MAX_AGE})
