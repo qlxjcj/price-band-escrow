@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Price Band Escrow — pay only at a verified market price</title>
+<style>
+  :root { --bg:#0f1216; --panel:#171b21; --line:#262c35; --ink:#e6ebf2; --dim:#97a3b1;
+          --ok:#58d6a0; --warn:#ffb454; --bad:#ff6b6b; --acc:#6aa8ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:1020px; margin:0 auto; padding:0 20px 80px; }
+  header { display:flex; align-items:center; justify-content:space-between;
+           gap:16px; padding:22px 0; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  h1 { font-size:21px; margin:0; letter-spacing:-.01em; }
+  .sub { color:var(--dim); font-size:13px; margin:2px 0 0; }
+  h2 { font-size:17px; margin:32px 0 12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+          padding:18px 20px; margin:16px 0; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
+  label { display:block; font-size:12px; color:var(--dim); margin-bottom:5px;
+          text-transform:uppercase; letter-spacing:.05em; }
+  input, select { width:100%; padding:9px 11px; background:#0b0e12; color:var(--ink);
+                  border:1px solid var(--line); border-radius:7px; font-size:14px; }
+  input:focus, select:focus { outline:none; border-color:var(--acc); }
+  button { cursor:pointer; border:1px solid var(--line); background:#1d2430; color:var(--ink);
+           padding:9px 16px; border-radius:7px; font-size:14px; }
+  button:hover { border-color:var(--acc); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .primary { background:var(--acc); color:#08122a; border-color:var(--acc); font-weight:600; }
+  .danger { background:transparent; border-color:var(--bad); color:var(--bad); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:600; font-size:11px; text-transform:uppercase;
+       letter-spacing:.05em; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:600; }
+  .p-OPEN { background:rgba(106,168,255,.16); color:var(--acc); }
+  .p-EXECUTED { background:rgba(88,214,160,.16); color:var(--ok); }
+  .p-REFUNDED, .p-CANCELLED { background:rgba(255,107,107,.16); color:var(--bad); }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .dim { color:var(--dim); }
+  .mono { font-family:"SF Mono",Consolas,monospace; font-size:12.5px; word-break:break-all; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  #toast { position:fixed; right:18px; bottom:18px; display:flex; flex-direction:column;
+           gap:9px; z-index:50; max-width:340px; }
+  .msg { padding:11px 14px; border-radius:8px; border:1px solid var(--line);
+         background:var(--panel); font-size:13.5px; }
+  .msg.error { border-color:var(--bad); } .msg.success { border-color:var(--ok); }
+  .spinner { display:inline-block; width:13px; height:13px; border:2px solid var(--line);
+             border-top-color:var(--acc); border-radius:50%; animation:spin .8s linear infinite;
+             vertical-align:-2px; margin-right:7px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .hint { font-size:12.5px; color:var(--dim); margin-top:8px; }
+  a { color:var(--acc); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <h1>Price Band Escrow</h1>
+    <p class="sub">Escrow that pays the seller only at a verified market price</p>
+  </div>
+  <div class="row">
+    <span class="dim mono" id="wallet">read-only</span>
+    <button id="connectBtn">Connect wallet</button>
+  </div>
+</header>
+
+<div class="row" style="margin-top:18px">
+  <button id="tabNew" class="primary">New trade</button>
+  <button id="tabList">Trades</button>
+  <span class="dim" id="chainStatus"></span>
+</div>
+
+<!-- ============ new trade ============ -->
+<section id="viewNew">
+  <h2>Open a price-band escrow</h2>
+  <div class="card">
+    <div class="grid">
+      <div><label>Asset</label>
+        <select id="f_asset"></select></div>
+      <div><label>Unit</label>
+        <select id="f_unit"><option value="usd">usd</option></select></div>
+      <div><label>Quantity</label>
+        <input id="f_qty" value="2" inputmode="decimal"></div>
+      <div><label>Escrow (quote units)</label>
+        <input id="f_escrow" value="200000" inputmode="decimal"></div>
+      <div><label>Band low</label>
+        <input id="f_low" value="80000" inputmode="decimal"></div>
+      <div><label>Band high</label>
+        <input id="f_high" value="90000" inputmode="decimal"></div>
+      <div><label>Max provider spread (bps)</label>
+        <input id="f_tol" value="200" inputmode="numeric"></div>
+      <div><label>Seller address</label>
+        <input id="f_seller" placeholder="0x…"></div>
+    </div>
+    <div class="grid" style="margin-top:14px">
+      <div><label>Providers</label>
+        <div id="f_providers" class="row"></div></div>
+      <div><label>Settle opens after (s)</label>
+        <input id="f_after" value="60" inputmode="numeric"></div>
+      <div><label>Deadline (s from now)</label>
+        <input id="f_deadline" value="86400" inputmode="numeric"></div>
+    </div>
+    <div class="row" style="margin-top:18px">
+      <button class="primary" id="createBtn">Open escrow</button>
+      <span class="hint">Prices are compared at 1e8 scale. The escrow is released to the
+        seller only when the providers agree and the median is inside your band.</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ trade list ============ -->
+<section id="viewList" hidden>
+  <h2>Trades</h2>
+  <div class="card">
+    <div class="row" style="margin-bottom:12px">
+      <button id="refreshBtn">Refresh</button>
+      <span class="dim">Every row is read by its own trade id — never a shared latest record.</span>
+    </div>
+    <div id="listBody"><p class="dim">Loading…</p></div>
+  </div>
+
+  <div id="detailWrap" hidden>
+    <h2 id="detailTitle">Trade</h2>
+    <div class="card">
+      <div id="detailBody"><p class="dim">Loading…</p></div>
+      <div class="row" style="margin-top:16px">
+        <button class="primary" id="settleBtn">Settle</button>
+        <button id="cancelBtn" class="danger">Cancel</button>
+        <button id="expireBtn" class="danger">Expire</button>
+      </div>
+      <p class="hint" id="detailHint"></p>
+    </div>
+  </div>
+</section>
+
+<div id="toast"></div>
+</div>
+
+<script type="module">
+import { createClient } from "https://cdn.jsdelivr.net/npm/genlayer-js@1.2.0/+esm";
+
+const CONTRACT = "0xCc6B626e9815070846C50Ba373886dd3B8691aBE";
+const RPC = "https://rpc-bradbury.genlayer.com";
+const SCALE = 100000000;
+
+const chainConfig = {
+  id: 1686827103, name: "Bradbury Testnet", nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
+  rpcUrls: { default: { http: [RPC] } },
+  testnet: true,
+};
+
+const $ = (id) => document.getElementById(id);
+const readClient = createClient({ chain: chainConfig });
+let writeClient = null;
+let selectedTrade = null;
+
+// ---------- presentation helpers (DOM only, never innerHTML with data) ----------
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined && text !== null) n.textContent = String(text);
+  return n;
+}
+function toast(text, kind) {
+  const box = $("toast");
+  const m = el("div", "msg " + (kind || ""), text);
+  box.appendChild(m);
+  setTimeout(() => m.remove(), 7000);
+}
+function busy(btn, on, label) {
+  btn.disabled = on;
+  if (on) {
+    btn.dataset.label = btn.dataset.label || btn.textContent;
+    btn.textContent = "";
+    btn.appendChild(el("span", "spinner"));
+    btn.appendChild(document.createTextNode(label || "Working…"));
+  } else if (btn.dataset.label) {
+    btn.textContent = btn.dataset.label;
+  }
+}
+function pill(status) {
+  return el("span", "pill p-" + status, status);
+}
+function scaleUp(v) {
+  const n = Number(v) / SCALE;
+  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+// ---------- reads: always bound to an explicit id ----------
+async function read(method, args) {
+  return await readClient.readContract({ address: CONTRACT, functionName: method, args });
+}
+
+async function connectWallet() {
+  if (!window.ethereum) throw new Error("Install a wallet such as MetaMask first");
+  await window.ethereum.request({ method: "eth_requestAccounts" });
+  const accounts = await window.ethereum.request({ method: "eth_accounts" });
+  const account = accounts[0];
+  writeClient = createClient({ chain: chainConfig, account, provider: window.ethereum });
+  await writeClient.connect("testnetBradbury");
+  $("wallet").textContent = account.slice(0, 6) + "…" + account.slice(-4);
+  return account;
+}
+
+async function write(method, args, value) {
+  if (!writeClient) await connectWallet();
+  const hash = await writeClient.writeContract({
+    address: CONTRACT, functionName: method, args,
+    ...(value && value > 0n ? { value } : {}),
+  });
+  return hash;
+}
+
+// ---------- new trade ----------
+function toScaled(text, scale) {
+  const s = String(text).trim();
+  if (!/^-?\d+(\.\d+)?$/.test(s)) throw new Error("Not a number: " + text);
+  const neg = s.startsWith("-");
+  const [whole, frac = ""] = (neg ? s.slice(1) : s).split(".");
+  const v = BigInt(whole || "0") * scale + BigInt((frac + "0000000000").slice(0, 10));
+  return neg ? -v : v;
+}
+
+async function loadCatalogue() {
+  const raw = await read("get_catalogue", []);
+  const cat = JSON.parse(raw);
+  const sel = $("f_asset");
+  sel.textContent = "";
+  for (const a of cat.assets) sel.appendChild(el("option", "", a));
+  const box = $("f_providers");
+  box.textContent = "";
+  for (const p of cat.providers) {
+    const id = "prov_" + p;
+    const wrap = el("label", "", "");
+    wrap.style.textTransform = "none";
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.id = id; cb.value = p; cb.checked = true; cb.style.width = "auto";
+    wrap.appendChild(cb);
+    wrap.appendChild(document.createTextNode(" " + p));
+    box.appendChild(wrap);
+  }
+  $("chainStatus").textContent = cat.providers.join(" · ") + " · scale 1e" +
+    String(cat.price_scale).split("0").length;
+}
+
+// ---------- trade list ----------
+async function loadList() {
+  const body = $("listBody");
+  body.textContent = "";
+  try {
+    const count = Number(await read("get_trade_count", []));
+    if (count === 0) {
+      body.appendChild(el("p", "dim", "No trades yet. Open one to begin."));
+      return;
+    }
+    const table = el("table", "", "");
+    const head = el("tr", "", "");
+    for (const h of ["id", "asset", "qty", "band", "status", "reference"]) head.appendChild(el("th", "", h));
+    table.appendChild(head);
+    for (let i = 0; i < count; i++) {
+      // Every row is fetched by its own id. There is no get_latest anywhere.
+      const t = JSON.parse(await read("get_trade", ["t" + i]));
+      const tr = el("tr", "", "");
+      tr.style.cursor = "pointer";
+      const idCell = el("td", "mono", t.trade_id);
+      tr.appendChild(idCell);
+      tr.appendChild(el("td", "", t.asset + "/" + t.unit));
+      tr.appendChild(el("td", "", scaleUp(t.qty)));
+      tr.appendChild(el("td", "", scaleUp(t.band_low) + " – " + scaleUp(t.band_high)));
+      const st = el("td", "", ""); st.appendChild(pill(t.status)); tr.appendChild(st);
+      tr.appendChild(el("td", "", t.reference ? scaleUp(t.reference) : "—"));
+      tr.onclick = () => openDetail(t.trade_id);
+      table.appendChild(tr);
+    }
+    body.appendChild(table);
+  } catch (e) {
+    body.appendChild(el("p", "bad", "Could not read the chain: " + String(e).slice(0, 160)));
+  }
+}
+
+// ---------- trade detail ----------
+async function openDetail(tradeId) {
+  selectedTrade = tradeId;
+  $("detailWrap").hidden = false;
+  $("detailTitle").textContent = "Trade " + tradeId;
+  const body = $("detailBody");
+  body.textContent = "";
+  body.appendChild(el("p", "dim", "Loading…"));
+  try {
+    // Bound to this id alone.
+    const t = JSON.parse(await read("get_trade", [tradeId]));
+    const rows = JSON.parse(await read("get_quote", [tradeId]));
+    body.textContent = "";
+
+    const meta = el("table", "", "");
+    const add = (k, v) => {
+      const tr = el("tr", "", "");
+      tr.appendChild(el("th", "", k));
+      const td = el("td", "", "");
+      if (typeof v === "string" && v.startsWith("0x")) td.className = "mono";
+      td.textContent = v;
+      tr.appendChild(td);
+      meta.appendChild(tr);
+    };
+    const st = el("tr", "", "");
+    st.appendChild(el("th", "", "status"));
+    const stc = el("td", "", ""); stc.appendChild(pill(t.status));
+    stc.appendChild(document.createTextNode("  " + t.reason));
+    st.appendChild(stc); meta.appendChild(st);
+    add("buyer", t.buyer);
+    add("seller", t.seller);
+    add("quantity", scaleUp(t.qty));
+    add("escrow", scaleUp(t.escrow));
+    add("band", scaleUp(t.band_low) + " – " + scaleUp(t.band_high));
+    add("max spread", t.tolerance_bps + " bps");
+    add("verified price", t.reference ? scaleUp(t.reference) : "—");
+    add("observed spread", t.spread_bps + " bps");
+    add("seller paid", scaleUp(t.seller_paid));
+    add("buyer refunded", scaleUp(t.buyer_refund));
+    body.appendChild(meta);
+
+    if (rows.length) {
+      body.appendChild(el("h2", "", "What each provider said"));
+      const q = el("table", "", "");
+      const head = el("tr", "", "");
+      for (const h of ["provider", "accepted", "price", "as of", "label", "reason"]) head.appendChild(el("th", "", h));
+      q.appendChild(head);
+      for (const r of rows) {
+        const tr = el("tr", "", "");
+        tr.appendChild(el("td", "", r.provider));
+        const okc = el("td", "", "");
+        okc.appendChild(el("span", r.ok ? "ok" : "bad", r.ok ? "yes" : "no"));
+        tr.appendChild(okc);
+        tr.appendChild(el("td", "", r.price ? scaleUp(r.price) : "—"));
+        tr.appendChild(el("td", "dim", r.updated ? new Date(r.updated * 1000).toISOString() : "—"));
+        tr.appendChild(el("td", "mono", r.label || "—"));
+        tr.appendChild(el("td", "dim", r.reason || ""));
+        q.appendChild(tr);
+      }
+      body.appendChild(q);
+    }
+
+    $("detailHint").textContent =
+      t.status === "OPEN"
+        ? "Settle runs inside the window [" + new Date(t.settle_after * 1000).toISOString() +
+          ", " + new Date(t.deadline * 1000).toISOString() + "]. Cancel is buyer-only before it opens; " +
+          "expire is permissionless after the deadline."
+        : "This trade is final. seller_paid + buyer_refund = escrow.";
+  } catch (e) {
+    body.textContent = "";
+    body.appendChild(el("p", "bad", "Could not read this trade: " + String(e).slice(0, 160)));
+  }
+}
+
+// ---------- actions ----------
+async function doCreate() {
+  const btn = $("createBtn");
+  busy(btn, true, " Opening…");
+  try {
+    const providers = Array.from(document.querySelectorAll("#f_providers input:checked")).map((x) => x.value);
+    const args = [
+      $("f_seller").value.trim(),
+      $("f_asset").value,
+      $("f_unit").value,
+      toScaled($("f_qty").value, SCALE).toString(),
+      toScaled($("f_low").value, SCALE).toString(),
+      toScaled($("f_high").value, SCALE).toString(),
+      $("f_tol").value.trim(),
+      providers,
+      $("f_after").value.trim(),
+      $("f_deadline").value.trim(),
+    ];
+    const escrow = toScaled($("f_escrow").value, 1n);
+    await write("open_trade", args, escrow);
+    toast("Escrow opened. It will appear in the list once the transaction lands.", "success");
+    showList();
+  } catch (e) {
+    toast(String(e).slice(0, 200), "error");
+  } finally {
+    busy(btn, false);
+  }
+}
+
+async function doAction(method) {
+  if (!selectedTrade) return;
+  const btn = method === "settle" ? $("settleBtn") : method === "cancel" ? $("cancelBtn") : $("expireBtn");
+  busy(btn, true, " Sending…");
+  try {
+    await write(method, [selectedTrade]);
+    toast(method + " submitted.", "success");
+    await openDetail(selectedTrade);
+    await loadList();
+  } catch (e) {
+    toast(String(e).slice(0, 200), "error");
+  } finally {
+    busy(btn, false);
+  }
+}
+
+// ---------- navigation ----------
+function showNew() {
+  $("viewNew").hidden = false; $("viewList").hidden = true;
+  $("tabNew").classList.add("primary"); $("tabList").classList.remove("primary");
+}
+function showList() {
+  $("viewNew").hidden = true; $("viewList").hidden = false;
+  $("tabList").classList.add("primary"); $("tabNew").classList.remove("primary");
+  loadList();
+}
+
+$("tabNew").onclick = showNew;
+$("tabList").onclick = showList;
+$("refreshBtn").onclick = loadList;
+$("createBtn").onclick = doCreate;
+$("settleBtn").onclick = () => doAction("settle");
+$("cancelBtn").onclick = () => doAction("cancel");
+$("expireBtn").onclick = () => doAction("expire");
+$("connectBtn").onclick = async () => {
+  const btn = $("connectBtn");
+  busy(btn, true, " Connecting…");
+  try { await connectWallet(); toast("Wallet connected", "success"); }
+  catch (e) { toast(String(e).slice(0, 200), "error"); }
+  finally { busy(btn, false); }
+};
+
+showNew();
+loadCatalogue().catch((e) => toast("Catalogue unavailable: " + String(e).slice(0, 140), "error"));
+</script>
+</body>
+</html>
